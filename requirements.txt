@@ -1,0 +1,11 @@
+flask
+requests
+feedparser
+pandas
+python-dotenv
+fredapi
+gunicorn
+schedule
+beautifulsoup4
+lxml
+yfinance

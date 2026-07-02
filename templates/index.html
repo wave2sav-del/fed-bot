@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>داشبورد الفيدرالي</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#eee}
+.header{background:#1a1d2e;padding:20px 30px;border-bottom:1px solid #2a2d3e;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:22px;color:#fff}
+.header span{font-size:13px;color:#888}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:24px}
+.card{background:#1a1d2e;border-radius:12px;padding:20px;border:1px solid #2a2d3e}
+.card h3{font-size:13px;color:#888;margin-bottom:10px}
+.card .value{font-size:28px;font-weight:700}
+.card .sub{font-size:13px;color:#888;margin-top:4px}
+.green{color:#22c55e}.red{color:#ef4444}.yellow{color:#f59e0b}.blue{color:#3b82f6}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 24px 24px}
+.chart-card{background:#1a1d2e;border-radius:12px;padding:20px;border:1px solid #2a2d3e}
+.chart-card h3{font-size:14px;color:#aaa;margin-bottom:16px}
+.bar-bg{background:#2a2d3e;border-radius:6px;height:12px;overflow:hidden;margin-top:6px}
+.bar-fill{height:100%;border-radius:6px;transition:width 1s}
+.label-row{display:flex;justify-content:space-between;font-size:13px;margin-top:12px}
+.news-section{padding:0 24px 24px}
+.news-card{background:#1a1d2e;border-radius:12px;padding:20px;border:1px solid #2a2d3e}
+.news-card h3{font-size:14px;color:#aaa;margin-bottom:16px}
+.news-item{padding:12px 0;border-bottom:1px solid #2a2d3e}
+.news-item:last-child{border-bottom:none}
+.news-item a{color:#3b82f6;text-decoration:none;font-size:14px;line-height:1.5}
+.news-item .date{font-size:11px;color:#666;margin-top:4px}
+@media(max-width:768px){.charts{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>داشبورد الفيدرالي</h1>
+  <span id="updated">جاري التحميل...</span>
+</div>
+<div class="grid">
+  <div class="card"><h3>التضخم CPI</h3><div class="value" id="cpi_value">--</div><div class="sub" id="cpi_change">--</div></div>
+  <div class="card"><h3>مستوى التضخم</h3><div class="value" id="inflation_level">--</div></div>
+  <div class="card"><h3>سعر الفائدة</h3><div class="value blue" id="rate_value">--%</div></div>
+  <div class="card"><h3>توجه الفيدرالي</h3><div class="value" id="fed_direction">--</div></div>
+</div>
+<div class="charts">
+  <div class="chart-card">
+    <h3>تشديد vs تيسير</h3>
+    <div class="label-row"><span>تشديد Hawkish</span><span id="hawk_pct">50%</span></div>
+    <div class="bar-bg"><div class="bar-fill" id="hawk_bar" style="width:50%;background:#ef4444"></div></div>
+    <div class="label-row"><span>تيسير Dovish</span><span id="dove_pct">50%</span></div>
+    <div class="bar-bg"><div class="bar-fill" id="dove_bar" style="width:50%;background:#22c55e"></div></div>
+    <canvas id="hawkChart" style="margin-top:20px;max-height:180px"></canvas>
+  </div>
+  <div class="chart-card"><h3>التضخم CPI - آخر 12 شهر</h3><canvas id="cpiChart" style="max-height:220px"></canvas></div>
+  <div class="chart-card"><h3>سعر الفائدة - آخر 12 شهر</h3><canvas id="rateChart" style="max-height:220px"></canvas></div>
+  <div class="chart-card"><h3>تغير التضخم الشهري</h3><canvas id="changeChart" style="max-height:220px"></canvas></div>
+</div>
+<div class="news-section">
+  <div class="news-card"><h3>آخر أخبار الفيدرالي</h3><div id="news_list"></div></div>
+</div>
+<script>
+const opts={responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#888',font:{size:10}},grid:{color:'#2a2d3e'}},y:{ticks:{color:'#888'},grid:{color:'#2a2d3e'}}}};
+const hawkChart=new Chart(document.getElementById('hawkChart'),{type:'doughnut',data:{labels:['تشديد','تيسير'],datasets:[{data:[50,50],backgroundColor:['#ef4444','#22c55e'],borderWidth:0}]},options:{responsive:true,plugins:{legend:{display:true,labels:{color:'#aaa'}}}}});
+const cpiChart=new Chart(document.getElementById('cpiChart'),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',fill:true,tension:0.4,pointRadius:3}]},options:opts});
+const rateChart=new Chart(document.getElementById('rateChart'),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,0.1)',fill:true,tension:0.4,pointRadius:3}]},options:opts});
+const changeChart=new Chart(document.getElementById('changeChart'),{type:'bar',data:{labels:[],datasets:[{data:[],backgroundColor:[]}]},options:opts});
+
+async function fetchData(){
+  try{
+    const d=await(await fetch('/api/data')).json();
+    document.getElementById('updated').textContent='آخر تحديث: '+d.updated;
+    document.getElementById('cpi_value').textContent=d.current_cpi;
+    const ch=d.current_change;
+    const chEl=document.getElementById('cpi_change');
+    chEl.textContent=(ch>0?'+':'')+ch+'% مقارنة بالشهر السابق';
+    chEl.className='sub '+(ch>0.2?'red':ch<0?'green':'yellow');
+    const lvlEl=document.getElementById('inflation_level');
+    lvlEl.textContent=d.inflation_level;
+    lvlEl.className='value '+(d.inflation_level==='مرتفع'?'red':d.inflation_level==='منخفض'?'green':'yellow');
+    document.getElementById('rate_value').textContent=d.current_rate+'%';
+    const dirEl=document.getElementById('fed_direction');
+    dirEl.textContent=d.hawkish>d.dovish?'تشديد':'تيسير';
+    dirEl.className='value '+(d.hawkish>d.dovish?'red':'green');
+    document.getElementById('hawk_pct').textContent=d.hawkish+'%';
+    document.getElementById('dove_pct').textContent=d.dovish+'%';
+    document.getElementById('hawk_bar').style.width=d.hawkish+'%';
+    document.getElementById('dove_bar').style.width=d.dovish+'%';
+    hawkChart.data.datasets[0].data=[d.hawkish,d.dovish];hawkChart.update();
+    cpiChart.data.labels=d.cpi_dates;cpiChart.data.datasets[0].data=d.cpi_values;cpiChart.update();
+    rateChart.data.labels=d.rate_dates;rateChart.data.datasets[0].data=d.rate_values;rateChart.update();
+    changeChart.data.labels=d.cpi_dates;
+    changeChart.data.datasets[0].data=d.cpi_changes;
+    changeChart.data.datasets[0].backgroundColor=d.cpi_changes.map(v=>v>0.2?'#ef4444':v<0?'#22c55e':'#f59e0b');
+    changeChart.update();
+    document.getElementById('news_list').innerHTML=d.news.map(n=>`<div class="news-item"><a href="${n.link}" target="_blank">${n.title}</a><div class="date">${n.date}</div></div>`).join('');
+  }catch(e){console.error(e)}
+}
+fetchData();
+setInterval(fetchData,300000);
+</script>
+</body>
+</html>
