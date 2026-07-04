@@ -1,4 +1,11 @@
 import os
+import threading
+from flask import Flask
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Fed Bot is running!"
 import requests
 import feedparser
 import schedule
@@ -212,10 +219,16 @@ schedule.every().day.at("08:00").do(build_and_send)
 schedule.every().day.at("16:00").do(build_and_send)
 schedule.every(1).hours.do(check_breaking_news)
 
-if __name__ == "__main__":
-    print("البوت يعمل الان - اضغط Ctrl+C للايقاف")
-    print("يرسل تقرير كل يوم 8 صباحا و 4 مساء")
+def run_bot():
     build_and_send()
     while True:
         schedule.run_pending()
         time.sleep(60)
+
+if __name__ == "__main__":
+    print("البوت يعمل الان...")
+    t = threading.Thread(target=run_bot)
+    t.daemon = True
+    t.start()
+    port = int(os.environ.get("PORT", 5000))
+    app_flask.run(host="0.0.0.0", port=port)
