@@ -196,12 +196,14 @@ def get_fed_rate():
 def get_all_data():
     print("جاري جلب البيانات المحدّثة...")
     events = get_forex_factory_events()
-
-    # CPI
+     # CPI
     cpi_data = get_cpi()
-    cpi_ff   = find_forecast(events, "cpi m/m") or find_forecast(events, "cpi y/y")
-    cpi_forecast = parse_value(cpi_ff["forecast"]) if cpi_ff else 2.6
-
+    cpi_ff   = find_forecast(events, "cpi y/y")
+    cpi_forecast = 2.6
+    if cpi_ff and cpi_ff.get("forecast"):
+        val = parse_value(cpi_ff["forecast"])
+        if val and 1.0 < val < 10.0:
+            cpi_forecast = val
     # NFP
     nfp_data = get_nfp()
     nfp_ff   = find_forecast(events, "non-farm")

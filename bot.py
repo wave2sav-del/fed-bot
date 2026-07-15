@@ -1,30 +1,31 @@
 import os
 import threading
-from flask import Flask
-app_flask = Flask(__name__)
-
-@app_flask.route("/")
-def home():
-    return "Fed Bot is running!"
 import requests
 import feedparser
 import schedule
 import time
 from datetime import datetime
+from flask import Flask
 from dotenv import load_dotenv
-from fredapi import Fred
-from scorer import (classify_event, score_text, score_actual_vs_forecast,
-                    calculate_confidence, calculate_asset_bias)
+from scorer import classify_event, score_text, calculate_confidence, calculate_asset_bias
 from sentiment import get_sentiment_report
 from tone import get_tone_report
-from economic_data import get_economic_dashboard
+from data_engine import get_all_data
+from fed_engine import score_indicator, analyze_fed_speech
 
 load_dotenv()
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-FRED_API_KEY     = os.getenv("FRED_API_KEY")
-fred = Fred(api_key=FRED_API_KEY)
 
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Fed Bot is running!"
+
+# ==============================
+# إرسال تيليغرام
+# ==============================
 def send_telegram(message):
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -34,6 +35,9 @@ def send_telegram(message):
     except Exception as e:
         print("خطأ:", e)
 
+# ==============================
+# جلب أخبار الفيدرالي
+# ==============================
 def get_fed_news():
     feed = feedparser.parse("https://www.federalreserve.gov/feeds/press_all.xml")
     news = []
@@ -42,44 +46,44 @@ def get_fed_news():
         news.append({
             "title":  entry.title,
             "link":   entry.link,
-            "date":   entry.published,
             "impact": impact,
             "weight": weight,
         })
     return news
 
-def get_inflation():
-    cpi  = fred.get_series("CPIAUCSL").iloc[-2:]
-    cur  = cpi.iloc[-1]
-    prev = cpi.iloc[-2]
-    ch   = round(((cur - prev) / prev) * 100, 4)
-    rate = round(fred.get_series("FEDFUNDS").iloc[-1], 2)
-    return {
-        "cpi":    round(cur, 2),
-        "change": ch,
-        "level":  "مرتفع" if ch > 0.2 else "منخفض" if ch < 0 else "متعادل",
-        "rate":   rate,
-    }
-
+# ==============================
+# بناء وإرسال التقرير
+# ==============================
 def build_and_send():
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] جاري بناء التقرير...")
 
     # 1. بيانات السوق
-    sentiment_report, market_data, fear_score = get_sentiment_report()
-    vix        = market_data["vix"]
-    dxy_change = float(market_data["dxy_change"])
-    us10y      = market_data["us10y"]
+    try:
+        sentiment_report, market_data, fear_score = get_sentiment_report()
+        vix        = market_data["vix"]
+        dxy        = market_data["dxy"]
+        dxy_change = float(market_data["dxy_change"])
+        us10y      = market_data["us10y"]
+    except:
+        vix = 20; dxy = 103; dxy_change = 0; us10y = 4.3; fear_score = 50
 
     # 2. نبرة الفيدرالي
-    tone_report, tone_hawk, tone_dove = get_tone_report()
+    try:
+        tone_report, tone_hawk, tone_dove = get_tone_report()
+    except:
+        tone_hawk = 50; tone_dove = 50
 
-    # 3. الداشبورد الاقتصادي
-    eco_report, eco_data = get_economic_dashboard()
+    # 3. البيانات الاقتصادية المحدّثة
+    try:
+        econ = get_all_data()
+    except Exception as e:
+        print("خطأ في البيانات:", e)
+        econ = {}
 
     # 4. الأخبار
     news = get_fed_news()
 
-    # 5. حساب النقاط
+    # 5. حساب النقاط من الأخبار
     hawk_total = 0
     dove_total = 0
     hawk_reasons = []
@@ -93,46 +97,57 @@ def build_and_send():
         hawk_reasons += hr
         dove_reasons += dr
 
-    # نقاط CPI
-    cpi_data = eco_data.get("التضخم CPI", {})
-    if cpi_data.get("actual") and cpi_data.get("forecast"):
-        cpi_hawk, cpi_dove, cpi_reason = score_actual_vs_forecast(
-            "CPI", cpi_data["actual"], cpi_data["forecast"]
-        )
-        hawk_total += cpi_hawk
-        dove_total += cpi_dove
-        if cpi_reason:
-            hawk_reasons.append(cpi_reason)
+    # 6. نقاط من data_engine
+    scores_list = []
 
-    # نقاط البطالة
-    unemp = eco_data.get("البطالة", {})
+    cpi = econ.get("cpi", {})
+    if cpi.get("actual") and cpi.get("forecast"):
+        s, bias_l, conf, reason = score_indicator("CPI", cpi["actual"], cpi["forecast"])
+        scores_list.append(s)
+        if s > 0:
+            hawk_total += abs(s)
+            hawk_reasons.append(f"CPI: {reason}")
+        elif s < 0:
+            dove_total += abs(s)
+            dove_reasons.append(f"CPI: {reason}")
+
+    nfp = econ.get("nfp", {})
+    if nfp.get("actual") and nfp.get("forecast"):
+        s, bias_l, conf, reason = score_indicator("NFP", nfp["actual"], nfp["forecast"])
+        scores_list.append(s)
+        if s > 0:
+            hawk_total += abs(s)
+            hawk_reasons.append(f"NFP: {reason}")
+        elif s < 0:
+            dove_total += abs(s)
+            dove_reasons.append(f"NFP: {reason}")
+
+    unemp = econ.get("unemployment", {})
     if unemp.get("actual") and unemp.get("forecast"):
-        u_hawk, u_dove, u_reason = score_actual_vs_forecast(
-            "unemployment", unemp["actual"], unemp["forecast"]
-        )
-        hawk_total += u_hawk
-        dove_total += u_dove
-        if u_reason:
-            dove_reasons.append(u_reason)
+        s, bias_l, conf, reason = score_indicator("Unemployment", unemp["actual"], unemp["forecast"])
+        scores_list.append(s)
+        if s > 0:
+            hawk_total += abs(s)
+        elif s < 0:
+            dove_total += abs(s)
 
-    # نقاط GDP
-    gdp = eco_data.get("النمو GDP", {})
+    gdp = econ.get("gdp", {})
     if gdp.get("actual") and gdp.get("forecast"):
-        g_hawk, g_dove, g_reason = score_actual_vs_forecast(
-            "gdp", gdp["actual"], gdp["forecast"]
-        )
-        hawk_total += g_hawk
-        dove_total += g_dove
+        s, bias_l, conf, reason = score_indicator("GDP", gdp["actual"], gdp["forecast"])
+        scores_list.append(s)
+        if s > 0:
+            hawk_total += abs(s)
+        elif s < 0:
+            dove_total += abs(s)
 
-    # دمج نبرة التصريحات
+    # 7. دمج نبرة التصريحات
     hawk_total += tone_hawk * 0.3
     dove_total += tone_dove * 0.3
 
-    # حساب النسب
+    # 8. النسب النهائية
     total = hawk_total + dove_total
     if total == 0:
-        hawk_pct = 50
-        dove_pct = 50
+        hawk_pct = 50; dove_pct = 50
     else:
         hawk_pct = round((hawk_total / total) * 100)
         dove_pct = 100 - hawk_pct
@@ -140,14 +155,28 @@ def build_and_send():
     confidence = calculate_confidence(hawk_total, dove_total, len(news))
     bias = calculate_asset_bias(hawk_pct, dove_pct, vix, dxy_change, us10y)
 
+    # 9. Fear label
     if fear_score >= 60:   fear_label = "طمع 🟢"
     elif fear_score >= 45: fear_label = "محايد ⚪"
     elif fear_score >= 30: fear_label = "خوف 🟡"
     else:                  fear_label = "خوف شديد 🔴"
 
+    # 10. VIX تحليل
+    if vix >= 30:   vix_label = "خوف شديد 🔴"
+    elif vix >= 20: vix_label = "خوف 🟡"
+    elif vix >= 15: vix_label = "محايد ⚪"
+    else:           vix_label = "طمع 🟢"
+
+    # 11. US10Y تحليل
+    if us10y >= 4.8:   y10_label = "ضغط Hawkish شديد 🔴"
+    elif us10y >= 4.3: y10_label = "ضغط Hawkish 🟡"
+    elif us10y >= 3.8: y10_label = "محايد ⚪"
+    else:              y10_label = "Dovish 🟢"
+
     bh = "=" * (hawk_pct // 10) + "-" * (10 - hawk_pct // 10)
     bd = "=" * (dove_pct // 10) + "-" * (10 - dove_pct // 10)
 
+    # 12. بناء التقرير
     lines = [
         "FED DAILY REPORT",
         datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -155,11 +184,63 @@ def build_and_send():
         "━━━━━━━━━━━━━━━━━━━━━",
         "FEAR & GREED INDEX",
         f"Score: {fear_score}/100 — {fear_label}",
-        f"VIX:  {vix}  |  DXY: {market_data['dxy']}  |  10Y: {us10y}%",
+        f"VIX:  {vix}  {vix_label}",
+        f"DXY:  {dxy}",
+        f"10Y:  {us10y}%  {y10_label}",
         "",
         "━━━━━━━━━━━━━━━━━━━━━",
-        eco_report,
+        "ECONOMIC DASHBOARD",
         "",
+    ]
+
+    # CPI
+    if cpi.get("actual"):
+        fc = cpi.get("forecast", "N/A")
+        fresh = cpi.get("freshness", {}).get("status", "")
+        diff = round(cpi["actual"] - fc, 2) if fc != "N/A" else 0
+        color = "🔴" if diff > 0 else "🟢" if diff < 0 else "⚪"
+        lines.append(f"{color} التضخم CPI")
+        lines.append(f"   Actual: {cpi['actual']}%  |  Forecast: {fc}%")
+        lines.append(f"   {'أعلى' if diff > 0 else 'أقل'} من التوقع بـ {abs(diff)} {color}  {fresh}")
+        lines.append("")
+
+    # NFP
+    if nfp.get("actual"):
+        fc = nfp.get("forecast")
+        color = "🟢" if nfp["actual"] and fc and nfp["actual"] > fc else "🔴" if nfp["actual"] and fc and nfp["actual"] < fc else "⚪"
+        lines.append(f"{color} الوظائف NFP")
+        lines.append(f"   Actual: {nfp['actual']}K  |  Forecast: {fc}K")
+        lines.append("")
+    else:
+        lines.append("⚪ الوظائف NFP")
+        lines.append(f"   Actual: N/A  |  Forecast: {nfp.get('forecast', 'N/A')}K")
+        lines.append("")
+
+    # البطالة
+    if unemp.get("actual"):
+        fc = unemp.get("forecast", 4.2)
+        diff = round(unemp["actual"] - fc, 1)
+        color = "🔴" if diff > 0 else "🟢" if diff < 0 else "⚪"
+        lines.append(f"{color} البطالة")
+        lines.append(f"   Actual: {unemp['actual']}%  |  Forecast: {fc}%")
+        lines.append("")
+
+    # GDP
+    if gdp.get("actual"):
+        fc = gdp.get("forecast", 1.8)
+        diff = round(gdp["actual"] - fc, 1)
+        color = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
+        lines.append(f"{color} النمو GDP")
+        lines.append(f"   Actual: {gdp['actual']}%  |  Forecast: {fc}%")
+        lines.append("")
+
+    # سعر الفائدة
+    rate = econ.get("fed_rate", {})
+    if rate.get("actual"):
+        lines.append(f"💰 سعر الفائدة الحالي: {rate['actual']}%")
+        lines.append("")
+
+    lines += [
         "━━━━━━━━━━━━━━━━━━━━━",
         "SCORING ENGINE",
         f"تشديد Hawkish: {hawk_pct}%  [{bh}]",
@@ -200,6 +281,9 @@ def build_and_send():
     print(report)
     send_telegram(report)
 
+# ==============================
+# تنبيه أخبار عالية التأثير
+# ==============================
 last_titles = []
 
 def check_breaking_news():
@@ -209,12 +293,13 @@ def check_breaking_news():
         if entry.title not in last_titles:
             impact, weight = classify_event(entry.title)
             if impact in ["CRITICAL", "HIGH"]:
-                send_telegram(
-                    f"تنبيه عاجل! {impact}\n{entry.title}\n{entry.link}"
-                )
+                send_telegram(f"تنبيه عاجل! {impact}\n{entry.title}\n{entry.link}")
                 print("تنبيه:", entry.title)
     last_titles = [e.title for e in feed.entries[:3]]
 
+# ==============================
+# الجدول الزمني
+# ==============================
 schedule.every().day.at("08:00").do(build_and_send)
 schedule.every().day.at("16:00").do(build_and_send)
 schedule.every(1).hours.do(check_breaking_news)
